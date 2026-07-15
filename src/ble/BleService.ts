@@ -2,12 +2,12 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import { BleError, BleManager, Device, State, Subscription } from 'react-native-ble-plx';
 
 import {
+  commandFor,
+  CONTROL_CHARACTERISTIC_UUID,
   DEVICE_NAME,
-  LED_CHARACTERISTIC_UUID,
-  LED_OFF_VALUE,
-  LED_ON_VALUE,
   SERVICE_UUID,
-  stateFromBase64,
+  statesFromBleValue,
+  toBleValue,
 } from './constants';
 
 const SCAN_TIMEOUT_MS = 12_000;
@@ -90,21 +90,21 @@ export class BleService {
     return connected.discoverAllServicesAndCharacteristics();
   }
 
-  async readLedState(deviceId: string): Promise<boolean | null> {
+  async readFunctionStates(deviceId: string): Promise<Record<string, boolean>> {
     const characteristic = await this.manager.readCharacteristicForDevice(
       deviceId,
       SERVICE_UUID,
-      LED_CHARACTERISTIC_UUID,
+      CONTROL_CHARACTERISTIC_UUID,
     );
-    return stateFromBase64(characteristic.value);
+    return statesFromBleValue(characteristic.value);
   }
 
-  async writeLedState(deviceId: string, isOn: boolean): Promise<void> {
+  async writeFunctionState(deviceId: string, functionId: string, isOn: boolean): Promise<void> {
     await this.manager.writeCharacteristicWithResponseForDevice(
       deviceId,
       SERVICE_UUID,
-      LED_CHARACTERISTIC_UUID,
-      isOn ? LED_ON_VALUE : LED_OFF_VALUE,
+      CONTROL_CHARACTERISTIC_UUID,
+      toBleValue(commandFor(functionId, isOn)),
     );
   }
 
