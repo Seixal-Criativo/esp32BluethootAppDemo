@@ -1,10 +1,15 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, SafeAreaView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Switch, Text, View } from 'react-native';
 import { Device } from 'react-native-ble-plx';
 
 import { BleService } from './src/ble/BleService';
 import { DEVICE_NAME } from './src/ble/constants';
+import {
+  CONTROLLER_FUNCTIONS,
+  ControllerFunctionId,
+  createInitialFunctionStates,
+} from './src/ble/functions';
 
 type ConnectionStatus = 'idle' | 'scanning' | 'connecting' | 'connected' | 'error';
 
@@ -17,7 +22,7 @@ export default function App() {
   const [status, setStatus] = useState<ConnectionStatus>('idle');
   const [message, setMessage] = useState('Ready to find your ESP32.');
   const [device, setDevice] = useState<Device | null>(null);
-  const [ledOn, setLedOn] = useState(false);
+  const [functionStates, setFunctionStates] = useState(createInitialFunctionStates);
   const [writing, setWriting] = useState(false);
   const writingRef = useRef(false);
 
@@ -47,9 +52,9 @@ export default function App() {
             setStatus('connecting');
             setMessage(`Connecting to ${DEVICE_NAME}…`);
             const connectedDevice = await ble.connect(foundDevice);
-            const currentState = await ble.readLedState(connectedDevice.id);
+            const currentStates = await ble.readFunctionStates(connectedDevice.id);
             setDevice(connectedDevice);
-            setLedOn(currentState ?? false);
+            setFunctionStates((previous) => ({ ...previous, ...currentStates }));
             setStatus('connected');
             setMessage(`Connected to ${DEVICE_NAME}.`);
           } catch (error) {
@@ -66,9 +71,9 @@ export default function App() {
     }
   };
 
-  const toggleLed = async (value: boolean) => {
+  const toggleFunction = async (functionId: ControllerFunctionId, value: boolean) => {
     if (!device || writingRef.current) return;
-    const previousValue = ledOn;
+    const previousValue = functionStates[functionId];
 
     try {
       // Keep this controlled Switch in sync immediately. Waiting for the BLE
@@ -76,11 +81,11 @@ export default function App() {
       // an unintended second command.
       writingRef.current = true;
       setWriting(true);
-      setLedOn(value);
-      await ble.writeLedState(device.id, value);
-      setMessage(`LED turned ${value ? 'on' : 'off'}.`);
+      setFunctionStates((previous) => ({ ...previous, [functionId]: value }));
+      await ble.writeFunctionState(device.id, functionId, value);
+      setMessage(`${functionId} turned ${value ? 'on' : 'off'}.`);
     } catch (error) {
-      setLedOn(previousValue);
+      setFunctionStates((previous) => ({ ...previous, [functionId]: previousValue }));
       showError(error);
     } finally {
       writingRef.current = false;
@@ -109,7 +114,7 @@ export default function App() {
       <View style={styles.container}>
         <Text style={styles.eyebrow}>BLUETOOTH LOW ENERGY</Text>
         <Text style={styles.title}>ESP32 LED{`\n`}Controller</Text>
-        <Text style={styles.subtitle}>Connect to your {DEVICE_NAME} and switch its built-in LED.</Text>
+        <Text style={styles.subtitle}>Connect to {DEVICE_NAME} and control its Bluetooth functions.</Text>
 
         <View style={styles.card}>
           <View style={styles.statusRow}>
@@ -131,19 +136,26 @@ export default function App() {
           )}
         </View>
 
-        <View style={[styles.ledCard, !isConnected && styles.ledCardDisabled]}>
-          <View>
-            <Text style={styles.ledLabel}>GPIO 12 LED</Text>
-            <Text style={styles.ledValue}>{ledOn ? 'ON' : 'OFF'}</Text>
-          </View>
-          <Switch
-            value={ledOn}
-            onValueChange={toggleLed}
-            disabled={!isConnected || writing}
-            trackColor={{ false: '#475569', true: '#0EA5E9' }}
-            thumbColor={ledOn ? '#F8FAFC' : '#CBD5E1'}
-          />
-        </View>
+        {CONTROLLER_FUNCTIONS.map((item) => {
+          const isOn = functionStates[item.id];
+
+          return (
+            <View key={item.id} style={[styles.functionCard, !isConnected && styles.functionCardDisabled]}>
+              <View style={styles.functionText}>
+                <Text style={styles.functionLabel}>{item.label}</Text>
+                <Text style={styles.functionDescription}>{item.description}</Text>
+                <Text style={styles.functionValue}>{isOn ? 'ON' : 'OFF'}</Text>
+              </View>
+              <Switch
+                value={isOn}
+                onValueChange={(value) => toggleFunction(item.id, value)}
+                disabled={!isConnected || writing}
+                trackColor={{ false: '#475569', true: '#0EA5E9' }}
+                thumbColor={isOn ? '#F8FAFC' : '#CBD5E1'}
+              />
+            </View>
+          );
+        })}
 
         <Text style={styles.help}>On the first connection Android may ask you to pair with the ESP32.</Text>
       </View>
@@ -171,9 +183,11 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
   secondaryButton: { borderColor: '#475569', borderRadius: 14, borderWidth: 1, alignItems: 'center', paddingVertical: 15, marginTop: 18 },
   secondaryButtonText: { color: '#CBD5E1', fontSize: 16, fontWeight: '700' },
-  ledCard: { marginTop: 18, backgroundColor: '#172554', borderRadius: 20, padding: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  ledCardDisabled: { opacity: 0.5 },
-  ledLabel: { color: '#93C5FD', fontSize: 12, fontWeight: '800', letterSpacing: 1 },
-  ledValue: { color: '#F8FAFC', fontSize: 28, fontWeight: '800', marginTop: 4 },
+  functionCard: { marginTop: 18, backgroundColor: '#172554', borderRadius: 20, padding: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  functionCardDisabled: { opacity: 0.5 },
+  functionText: { flex: 1, paddingRight: 16 },
+  functionLabel: { color: '#93C5FD', fontSize: 12, fontWeight: '800', letterSpacing: 1 },
+  functionDescription: { color: '#94A3B8', fontSize: 13, marginTop: 5 },
+  functionValue: { color: '#F8FAFC', fontSize: 28, fontWeight: '800', marginTop: 4 },
   help: { color: '#64748B', fontSize: 13, lineHeight: 19, marginTop: 22, textAlign: 'center' },
 });

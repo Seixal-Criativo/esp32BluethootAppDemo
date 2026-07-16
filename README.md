@@ -107,9 +107,32 @@ npx expo start --dev-client
 | Service UUID | `7B6F0001-6F6D-4A39-8F7D-0EEB5D4D0001` |
 | LED characteristic UUID | `7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001` |
 | Characteristic operations | Read and write, encrypted |
-| ON command | ASCII `1` |
-| OFF command | ASCII `0` |
+| Command format | `FUNCTION_ID:1` to turn on; `FUNCTION_ID:0` to turn off |
+| Current LED commands | `LED:1` and `LED:0` |
 | Pairing | BLE Just Works bonding |
+
+## Add another Bluetooth-controlled output
+
+The controller is registry-based. To add another simple on/off output, such as a relay, add the same ID in exactly two places:
+
+1. In `firmware/Esp32LedBle/Esp32LedBle.ino`, add one row to `OUTPUTS`:
+
+   ```cpp
+   {"RELAY", 13, false, false},
+   ```
+
+2. In `src/ble/functions.ts`, add one row to `CONTROLLER_FUNCTIONS`:
+
+   ```ts
+   { id: 'RELAY', label: 'Relay', description: 'Relay module on GPIO 13' },
+   ```
+
+Compile/upload the ESP32 sketch, then reload the app. The app automatically shows a new switch and sends `RELAY:1` or `RELAY:0` over BLE.
+
+Detailed guides:
+
+- [English](docs/bluetooth-controller-guide.en.md)
+- [Português (Portugal)](docs/bluetooth-controller-guide.pt-PT.md)
 
 ## Troubleshooting
 
