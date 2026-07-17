@@ -1,3 +1,4 @@
+#include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -5,128 +6,146 @@
 
 constexpr char DEVICE_NAME[] = "ESP32_LED";
 constexpr char SERVICE_UUID[] = "7B6F0001-6F6D-4A39-8F7D-0EEB5D4D0001";
-constexpr char CONTROL_CHARACTERISTIC_UUID[] = "7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001";
+constexpr char CONTROL_UUID[] = "7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001";
+constexpr char EVENT_UUID[] = "7B6F0003-6F6D-4A39-8F7D-0EEB5D4D0001";
+constexpr uint8_t LED_PIN = 12;
+constexpr uint8_t SENSOR_PIN = 34;
+constexpr size_t MAX_FRAME_LENGTH = 160;
 
-struct OutputFunction {
-  const char* id;
-  uint8_t pin;
-  bool activeLow;
-  bool isOn;
+BLECharacteristic* eventCharacteristic = nullptr;
+bool clientConnected = false;
+bool ledOn = false;
+bool blinking = false;
+bool blinkPhaseOn = false;
+uint32_t blinkOnMs = 250, blinkOffMs = 250, blinkChangedAt = 0;
+uint16_t blinkCount = 0, blinkCompleted = 0;
+bool streaming = false;
+uint32_t sensorIntervalMs = 250, sensorLastReadAt = 0, sensorSequence = 0;
+
+void publish(const String& frame) {
+  if (!clientConnected || frame.length() > MAX_FRAME_LENGTH) return;
+  eventCharacteristic->setValue(frame.c_str());
+  eventCharacteristic->notify();
+}
+
+String field(const String& arguments, const String& key) {
+  const String prefix = key + "=";
+  int start = 0;
+  while (start <= arguments.length()) {
+    int end = arguments.indexOf(';', start);
+    if (end < 0) end = arguments.length();
+    const String item = arguments.substring(start, end);
+    if (item.startsWith(prefix)) return item.substring(prefix.length());
+    start = end + 1;
+  }
+  return "";
+}
+
+bool unsignedArgument(const String& arguments, const String& key, uint32_t minimum, uint32_t maximum, uint32_t& value) {
+  const String text = field(arguments, key);
+  if (text.length() == 0) return false;
+  for (size_t i = 0; i < text.length(); i++) if (!isDigit(text[i])) return false;
+  const unsigned long parsed = text.toInt();
+  if (parsed < minimum || parsed > maximum) return false;
+  value = parsed;
+  return true;
+}
+
+void setLed(bool on) { ledOn = on; digitalWrite(LED_PIN, on ? HIGH : LOW); }
+String ledFields() { return "on=" + String(ledOn ? 1 : 0) + ";blinking=" + String(blinking ? 1 : 0); }
+String subscriptionFields() { return "streaming=" + String(streaming ? 1 : 0) + ";intervalMs=" + String(sensorIntervalMs); }
+void stateEvent() { publish("E|state|" + ledFields()); }
+void response(uint32_t id, const String& values) { publish("R|" + String(id) + "|ok|" + values); }
+void errorResponse(uint32_t id, const String& code, const String& message) { publish("R|" + String(id) + "|error|code=" + code + ";message=" + message); }
+
+typedef void (*CommandHandler)(uint32_t, const String&);
+struct CommandDefinition { const char* name; CommandHandler handler; };
+
+void snapshot(uint32_t id, const String&) { response(id, ledFields() + ";" + subscriptionFields()); }
+
+void setLedCommand(uint32_t id, const String& arguments) {
+  const String on = field(arguments, "on");
+  if (on != "0" && on != "1") { errorResponse(id, "INVALID_ARGUMENT", "on must be 0 or 1"); return; }
+  blinking = false;
+  setLed(on == "1");
+  response(id, ledFields());
+  stateEvent();
+}
+
+void blinkCommand(uint32_t id, const String& arguments) {
+  uint32_t onMs, offMs, count;
+  if (!unsignedArgument(arguments, "onMs", 50, 10000, onMs) || !unsignedArgument(arguments, "offMs", 50, 10000, offMs) || !unsignedArgument(arguments, "count", 1, 100, count)) {
+    errorResponse(id, "INVALID_ARGUMENT", "invalid blink settings"); return;
+  }
+  blinkOnMs = onMs; blinkOffMs = offMs; blinkCount = count; blinkCompleted = 0;
+  blinking = true; blinkPhaseOn = true; blinkChangedAt = millis(); setLed(true);
+  response(id, ledFields());
+  stateEvent();
+}
+
+void subscribeSensor(uint32_t id, const String& arguments) {
+  uint32_t interval;
+  if (!unsignedArgument(arguments, "intervalMs", 100, 5000, interval)) { errorResponse(id, "INVALID_ARGUMENT", "intervalMs must be 100 to 5000"); return; }
+  sensorIntervalMs = interval; sensorLastReadAt = millis() - interval; streaming = true;
+  response(id, subscriptionFields());
+}
+
+void unsubscribeSensor(uint32_t id, const String&) { streaming = false; response(id, subscriptionFields()); }
+
+CommandDefinition COMMANDS[] = {
+  {"system.snapshot", snapshot}, {"led.set", setLedCommand}, {"led.blink", blinkCommand},
+  {"sensor.subscribe", subscribeSensor}, {"sensor.unsubscribe", unsubscribeSensor},
 };
 
-// ADD NEW ON/OFF FUNCTIONS HERE. The id must also be added to
-// src/ble/functions.ts in the React Native app.
-OutputFunction OUTPUTS[] = {
-  {"LED", 12, false, false},
-  // Example: {"RELAY", 13, false, false},
-};
-constexpr size_t OUTPUT_COUNT = sizeof(OUTPUTS) / sizeof(OUTPUTS[0]);
-
-BLECharacteristic* controlCharacteristic = nullptr;
-
-String stateSnapshot() {
-  String snapshot;
-
-  for (size_t index = 0; index < OUTPUT_COUNT; index++) {
-    if (index > 0) snapshot += ';';
-    snapshot += OUTPUTS[index].id;
-    snapshot += '=';
-    snapshot += OUTPUTS[index].isOn ? '1' : '0';
-  }
-
-  return snapshot;
-}
-
-void publishState() {
-  controlCharacteristic->setValue(stateSnapshot());
-}
-
-OutputFunction* findOutput(const String& id) {
-  for (size_t index = 0; index < OUTPUT_COUNT; index++) {
-    if (id.equalsIgnoreCase(OUTPUTS[index].id)) return &OUTPUTS[index];
-  }
-
-  return nullptr;
-}
-
-void setOutputState(OutputFunction& output, bool isOn) {
-  output.isOn = isOn;
-  const bool pinLevel = output.activeLow ? !isOn : isOn;
-  digitalWrite(output.pin, pinLevel ? HIGH : LOW);
-  publishState();
-  Serial.printf("%s is now %s\n", output.id, isOn ? "ON" : "OFF");
+void dispatch(const String& frame) {
+  if (frame.length() > MAX_FRAME_LENGTH || !frame.startsWith("C|")) return;
+  const int first = frame.indexOf('|', 2), second = frame.indexOf('|', first + 1);
+  if (first < 0 || second < 0) return;
+  const uint32_t id = frame.substring(2, first).toInt();
+  const String name = frame.substring(first + 1, second);
+  const String arguments = frame.substring(second + 1);
+  if (id == 0) return;
+  Serial.println("Command: " + name + " (" + arguments + ")");
+  for (const auto& command : COMMANDS) if (name == command.name) { command.handler(id, arguments); return; }
+  errorResponse(id, "UNKNOWN_FUNCTION", "unknown function");
 }
 
 class ServerCallbacks : public BLEServerCallbacks {
-  void onDisconnect(BLEServer*) override {
-    Serial.println("Client disconnected; advertising again");
-    BLEDevice::startAdvertising();
-  }
+  void onConnect(BLEServer*) override { clientConnected = true; Serial.println("Client connected"); }
+  void onDisconnect(BLEServer*) override { clientConnected = false; streaming = false; Serial.println("Client disconnected; advertising again"); BLEDevice::startAdvertising(); }
 };
-
-class ControlCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* characteristic) override {
-    const String command = characteristic->getValue();
-
-    if (command == "GET") {
-      publishState();
-      return;
-    }
-
-    const int separator = command.indexOf(':');
-    if (separator < 1 || separator != command.length() - 2) {
-      Serial.println("Ignored invalid command: " + command);
-      publishState();
-      return;
-    }
-
-    const String functionId = command.substring(0, separator);
-    const char state = command[separator + 1];
-    OutputFunction* output = findOutput(functionId);
-
-    if (!output || (state != '0' && state != '1')) {
-      Serial.println("Ignored unknown function or state: " + command);
-      publishState();
-      return;
-    }
-
-    setOutputState(*output, state == '1');
-  }
-};
+class ControlCallbacks : public BLECharacteristicCallbacks { void onWrite(BLECharacteristic* characteristic) override { dispatch(String(characteristic->getValue().c_str())); } };
 
 void setup() {
   Serial.begin(115200);
-
-  for (size_t index = 0; index < OUTPUT_COUNT; index++) {
-    pinMode(OUTPUTS[index].pin, OUTPUT);
-    digitalWrite(OUTPUTS[index].pin, OUTPUTS[index].activeLow ? HIGH : LOW);
-  }
-
+  pinMode(LED_PIN, OUTPUT); pinMode(SENSOR_PIN, INPUT); setLed(false);
+  analogReadResolution(12);
   BLEDevice::init(DEVICE_NAME);
   BLESecurity::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
-  BLESecurity::setAuthenticationMode(true, false, true); // bonding, no passkey, Secure Connections
-
-  BLEServer* server = BLEDevice::createServer();
-  server->setCallbacks(new ServerCallbacks());
-
+  BLESecurity::setAuthenticationMode(true, false, true);
+  BLEServer* server = BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService* service = server->createService(SERVICE_UUID);
-  controlCharacteristic = service->createCharacteristic(
-    CONTROL_CHARACTERISTIC_UUID,
-    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
-  );
-  controlCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
-  controlCharacteristic->setCallbacks(new ControlCallbacks());
-  publishState();
-
+  BLECharacteristic* control = service->createCharacteristic(CONTROL_UUID, BLECharacteristic::PROPERTY_WRITE);
+  control->setAccessPermissions(ESP_GATT_PERM_WRITE_ENCRYPTED); control->setCallbacks(new ControlCallbacks());
+  eventCharacteristic = service->createCharacteristic(EVENT_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  eventCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED); eventCharacteristic->addDescriptor(new BLE2902());
+  eventCharacteristic->setValue("E|state|on=0;blinking=0");
   service->start();
-  BLEAdvertising* advertising = BLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);
-  advertising->setScanResponse(true);
-  BLEDevice::startAdvertising();
-
-  Serial.println("ESP32_LED is advertising. Commands use FUNCTION:0 or FUNCTION:1.");
+  BLEAdvertising* advertising = BLEDevice::getAdvertising(); advertising->addServiceUUID(SERVICE_UUID); advertising->setScanResponse(true); BLEDevice::startAdvertising();
+  Serial.println("ESP32 function controller is advertising.");
 }
 
 void loop() {
-  delay(1000);
+  const uint32_t now = millis();
+  if (blinking && now - blinkChangedAt >= (blinkPhaseOn ? blinkOnMs : blinkOffMs)) {
+    blinkChangedAt = now;
+    if (blinkPhaseOn) { blinkPhaseOn = false; setLed(false); }
+    else if (++blinkCompleted >= blinkCount) { blinking = false; setLed(false); stateEvent(); }
+    else { blinkPhaseOn = true; setLed(true); }
+  }
+  if (clientConnected && streaming && now - sensorLastReadAt >= sensorIntervalMs) {
+    sensorLastReadAt = now;
+    publish("E|analog|seq=" + String(++sensorSequence) + ";raw=" + String(analogRead(SENSOR_PIN)) + ";mv=" + String(analogReadMilliVolts(SENSOR_PIN)) + ";uptimeMs=" + String(now));
+  }
+  delay(2);
 }

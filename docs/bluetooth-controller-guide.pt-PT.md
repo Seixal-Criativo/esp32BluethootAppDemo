@@ -1,157 +1,103 @@
-# Guia para expandir o controlador Bluetooth
+# Guia para expandir o controlador de funções Bluetooth
 
-## Visão geral
+## Arquitetura
 
-Este projeto controla hardware ligado ao ESP32 a partir de uma aplicação Android em React Native, usando Bluetooth Low Energy (BLE). Não utiliza Wi-Fi, servidor cloud nem backend.
-
-```text
-Aplicação React Native
-  → encontra ESP32_LED através de uma pesquisa BLE
-  → liga-se e conclui o emparelhamento Bluetooth
-  → envia um comando legível, por exemplo LED:1
-  → o ESP32 valida o comando
-  → o ESP32 altera a saída GPIO correspondente
-```
-
-Depois de ligar ou processar um comando, o ESP32 devolve um resumo do estado, por exemplo:
+A aplicação Android não executa código Arduino remotamente. Invoca funções compiladas no firmware do ESP32. Assim, os argumentos são validados e ações demoradas podem decorrer ao mesmo tempo que a telemetria dos sensores.
 
 ```text
-LED=1;RELAY=0
+Interface → BleService.invoke() → característica de comandos encriptada
+                                      ↓
+                             registo COMMANDS no firmware
+                                      ↓
+Estado da app ← respostas/telemetria ← característica de notificações
 ```
 
-## Contrato BLE
+O `react-native-ble-plx` transporta valores em Base64. A conversão é feita em `src/ble/constants.ts`; o protocolo e o firmware utilizam mensagens ASCII legíveis.
 
-| Elemento | Valor |
+## Interface BLE
+
+| Item | Valor |
 | --- | --- |
 | Nome do dispositivo | `ESP32_LED` |
 | UUID do serviço | `7B6F0001-6F6D-4A39-8F7D-0EEB5D4D0001` |
-| UUID da característica de controlo | `7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001` |
-| Segurança | Característica BLE encriptada com emparelhamento Just Works |
-| Ligar uma função | `ID_DA_FUNÇÃO:1` |
-| Desligar uma função | `ID_DA_FUNÇÃO:0` |
-| Pedir todos os estados | `GET` |
-| Resposta de estado | `ID_DA_FUNÇÃO=0;OUTRO_ID=1` |
-
-A aplicação converte os comandos para Base64 antes de os enviar, porque `react-native-ble-plx` usa Base64 nos valores das características. Só precisa de trabalhar com texto normal, como `LED:1`; a conversão é feita em `src/ble/constants.ts`.
-
-## Ficheiros principais
-
-| Ficheiro | Função |
-| --- | --- |
-| `firmware/Esp32LedBle/Esp32LedBle.ino` | Servidor BLE do ESP32, validação de comandos e saídas GPIO |
-| `src/ble/functions.ts` | Registo de funções da app; os controlos são criados a partir desta lista |
-| `src/ble/BleService.ts` | Pesquisa BLE, ligação, leitura de estado e envio de comandos |
-| `src/ble/constants.ts` | Nome BLE, UUIDs, conversão Base64 e auxiliares do protocolo |
-| `App.tsx` | Ecrã de ligação e interruptores criados automaticamente |
-
-## Adicionar uma nova função de ligar/desligar
-
-Para adicionar uma saída GPIO com interruptor, basta criar uma entrada correspondente no registo do ESP32 e no registo da aplicação.
-
-### Passo 1 — Adicionar a saída no ESP32
-
-Abra `firmware/Esp32LedBle/Esp32LedBle.ino` e procure `OUTPUTS`:
-
-```cpp
-OutputFunction OUTPUTS[] = {
-  {"LED", 12, false, false},
-  // {"RELAY", 13, false, false},
-};
-```
-
-Adicione uma linha para a nova saída. Para um relé no GPIO 13:
-
-```cpp
-{"RELAY", 13, false, false},
-```
-
-Cada valor significa:
+| UUID de comandos | `7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001` |
+| UUID de eventos | `7B6F0003-6F6D-4A39-8F7D-0EEB5D4D0001` |
+| Segurança | Emparelhamento BLE encriptado (Just Works) |
+| Tamanho máximo | 160 bytes ASCII |
 
 ```text
-{ "ID_DA_FUNÇÃO", PINO_GPIO, ATIVO_EM_LOW, ESTADO_INICIAL }
+C|idPedido|nome.funcao|chave=valor;chave=valor
+R|idPedido|ok|chave=valor
+R|idPedido|error|code=CODIGO;message=descricao
+E|nome.evento|chave=valor;chave=valor
 ```
 
-- `ID_DA_FUNÇÃO`: identificador em maiúsculas usado no BLE e na app, por exemplo `RELAY`.
-- `PINO_GPIO`: pino de saída do ESP32, por exemplo `13`.
-- `ATIVO_EM_LOW`: use `false` para ligações normais, em que HIGH = ligado; use `true` apenas em hardware invertido.
-- `ESTADO_INICIAL`: normalmente `false`, para o dispositivo arrancar desligado em segurança.
+O ID associa respostas a pedidos simultâneos. Os valores não podem conter `|`, `;` ou `=`. A aplicação considera um pedido expirado ao fim de cinco segundos.
 
-### Passo 2 — Adicionar a função correspondente na app
+## Funções incluídas
 
-Abra `src/ble/functions.ts` e adicione o mesmo ID:
-
-```ts
-export const CONTROLLER_FUNCTIONS = [
-  {
-    id: 'LED',
-    label: 'LED no GPIO 12',
-    description: 'LED externo ligado ao GPIO 12',
-  },
-  {
-    id: 'RELAY',
-    label: 'Relé',
-    description: 'Módulo de relé ligado ao GPIO 13',
-  },
-] as const;
-```
-
-A aplicação cria automaticamente o interruptor do relé. Para uma saída normal de ligar/desligar não precisa de criar outro UUID, outro serviço BLE nem alterar o `App.tsx`.
-
-### Passo 3 — Compilar, enviar e recarregar
-
-1. Compile e envie o ficheiro `.ino` para o ESP32.
-2. Recarregue a aplicação de desenvolvimento Expo.
-3. Ligue-se ao `ESP32_LED`.
-4. O novo interruptor aparece automaticamente.
-5. Altere o interruptor e confirme que o hardware responde.
-
-## Exemplo: adicionar um buzzer
-
-Para um buzzer ativo no GPIO 14:
-
-```cpp
-// firmware/Esp32LedBle/Esp32LedBle.ino
-{"BUZZER", 14, false, false},
-```
-
-```ts
-// src/ble/functions.ts
-{ id: 'BUZZER', label: 'Buzzer', description: 'Buzzer ativo no GPIO 14' },
-```
-
-A app envia `BUZZER:1` para ligar e `BUZZER:0` para desligar.
-
-> Para motores, solenoides, bobinas de relés, fitas LED e outro equipamento de corrente elevada, utilize um transistor, MOSFET, módulo de relé, díodo de roda livre e fonte de alimentação separados quando necessário. Nunca alimente estas cargas diretamente a partir de um GPIO do ESP32.
-
-## Adicionar funções mais avançadas
-
-O registo foi feito para saídas binárias simples. Para funcionalidades mais avançadas, use a mesma característica de controlo, mas adicione um tratamento próprio no ESP32:
-
-| Funcionalidade | Exemplo de comando | Controlo na app |
+| Função | Argumentos | Resultado |
 | --- | --- | --- |
-| Brilho PWM | `BRIGHTNESS:128` | Slider |
-| Ângulo de servo | `SERVO:90` | Slider ou botões predefinidos |
-| Buzzer temporizado | `BEEP:500` | Botão |
-| Estado de sensor | `TEMPERATURE=23.4` | Valor de texto ou gráfico |
+| `system.snapshot` | nenhum | estado do LED, blink e stream |
+| `led.set` | `on=0|1` | estado do LED e blink |
+| `led.blink` | `onMs=50..10000`, `offMs=50..10000`, `count=1..100` | estado do LED e blink |
+| `sensor.subscribe` | `intervalMs=100..5000` | estado e intervalo do stream |
+| `sensor.unsubscribe` | nenhum | estado e intervalo do stream |
 
-Nestes casos, valide o valor numérico e os limites permitidos no sketch do ESP32 antes de controlar o hardware. Adicione o controlo correspondente em `App.tsx` e, se necessário, um método de escrita tipado em `BleService.ts`.
+`led.set` cancela um blink ativo. O blink utiliza uma máquina de estados com `millis()`, sem bloquear a leitura do sensor. O firmware interrompe o stream quando o telemóvel se desliga.
 
-## Regras de segurança e manutenção
+## Adicionar uma função
 
-- Os IDs das funções têm de ser exatamente iguais em `OUTPUTS` e `CONTROLLER_FUNCTIONS`.
-- Use IDs em maiúsculas, apenas com letras, números e underscores.
-- Inicie novas saídas físicas desligadas, salvo se existir uma razão clara para o contrário.
-- Valide todos os dados BLE recebidos no ESP32 antes de alterar o estado de um GPIO.
-- Não reutilize um pino de arranque (*boot-strapping*) do ESP32 sem confirmar o respetivo comportamento durante o arranque.
-- Alterações apenas em JavaScript exigem recarregar o Expo; alterações de configuração ou dependências nativas exigem uma nova build Android.
-- Qualquer alteração ao `.ino` exige compilação e envio de firmware para o ESP32.
+1. Crie um handler em `firmware/Esp32LedBle/Esp32LedBle.ino`:
 
-## Resolução de problemas
+   ```cpp
+   void relayPulse(uint32_t id, const String& arguments) {
+     uint32_t durationMs;
+     if (!unsignedArgument(arguments, "durationMs", 50, 5000, durationMs)) {
+       errorResponse(id, "INVALID_ARGUMENT", "durationMs must be 50 to 5000");
+       return;
+     }
 
-| Problema | Solução |
-| --- | --- |
-| O novo interruptor não aparece | Confirme que a entrada foi adicionada a `CONTROLLER_FUNCTIONS` e recarregue a app. |
-| O interruptor aparece mas não faz nada | Confirme que existe o mesmo ID em `OUTPUTS`, compile e envie o sketch para o ESP32. |
-| O ESP32 rejeita um comando | Abra o Monitor Série a 115200 baud; o firmware escreve comandos inválidos ou desconhecidos. |
-| A app não consegue voltar a ligar | Remova `ESP32_LED` nas definições Bluetooth Android, reinicie o ESP32 e faça nova pesquisa. |
-| Não é possível enviar o firmware | Feche o Monitor Série ou qualquer aplicação que esteja a utilizar a porta COM do ESP32 e tente novamente. |
+     // Inicie aqui o comportamento não bloqueante.
+     response(id, "active=1");
+   }
+   ```
+
+2. Registe-o em `COMMANDS`: `{"relay.pulse", relayPulse}`.
+3. Acrescente argumentos e resultado a `Esp32CommandMap`, em `src/ble/types.ts`.
+4. Interprete o resultado em `BleService.invoke` e crie um controlo validado na interface.
+5. Compile e envie o firmware, atualize a app e teste valores válidos, inválidos, timeout e desconexão.
+
+Os handlers devem terminar rapidamente. Motores, relés, animações e amostragem temporizada devem guardar estado e avançar em `loop()` com comparações seguras de `millis()`.
+
+## Adicionar outro sensor em tempo real
+
+1. Inicialize o sensor em `setup()`.
+2. Crie funções de subscrição ou estenda conscientemente as existentes.
+3. Leia o sensor periodicamente em `loop()` e publique um evento compacto.
+4. Adicione o evento a `DeviceEvent` em `src/ble/types.ts`.
+5. Valide-o em `src/ble/protocol.ts`.
+6. Encaminhe-o através de `BleService.subscribe` para a interface.
+7. Limite o histórico guardado para evitar crescimento contínuo da memória.
+
+BLE é indicado para medições compactas, não para áudio ou vídeo de alta largura de banda.
+
+## Demonstração analógica no GPIO 34
+
+```text
+ESP32 3.3 V   ── terminal exterior do potenciómetro
+ESP32 GND     ── outro terminal exterior
+ESP32 GPIO 34 ── terminal central/cursor
+```
+
+O GPIO 34 apenas funciona como entrada. O sinal deve permanecer entre 0 V e 3,3 V. `analogReadMilliVolts()` é aproximado e pode exigir calibração.
+
+## Verificação
+
+```powershell
+npx tsc --noEmit
+npx expo install --check
+npx expo run:android
+```
+
+Envie o sketch correspondente pelo Arduino IDE. Se o emparelhamento falhar depois de atualizar o protocolo, remova `ESP32_LED` das definições Bluetooth do Android, reinicie o ESP32 e volte a emparelhar.
