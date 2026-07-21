@@ -34,6 +34,39 @@ Open `firmware/Esp32LedBle/Esp32LedBle.ino` in Arduino IDE, select the matching 
 
 The app and firmware were upgraded together; the old `FUNCTION:0|1` firmware is not compatible.
 
+### Compile and upload with Arduino CLI
+
+Install the **esp32 by Espressif Systems** board package first. From the project root, list the connected boards and serial ports:
+
+```powershell
+arduino-cli board list
+```
+
+Compile for the generic ESP32 Dev Module:
+
+```powershell
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+```
+
+Upload it, replacing `COM6` with the port shown by `arduino-cli board list`:
+
+```powershell
+arduino-cli upload --port COM6 --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+```
+
+Open the serial monitor at 115200 baud:
+
+```powershell
+arduino-cli monitor --port COM6 --config baudrate=115200
+```
+
+On Windows, if `arduino-cli` is not on `PATH` but Arduino IDE is installed in the default per-user location, use its full path:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe" compile --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+& "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe" upload --port COM6 --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+```
+
 ## Run the Android app
 
 Requirements are Node.js 22.13 or later, Android SDK 36, an Android device, and Bluetooth.
@@ -91,3 +124,5 @@ The phone invokes compiled handlers; it intentionally cannot execute arbitrary A
 - If telemetry stays flat, check GPIO 34 wiring and common ground.
 - If controls time out, confirm the new firmware and app are both installed.
 - If native dependencies change, rebuild with `npx expo run:android`.
+
+See [troubleshoot.md](troubleshoot.md) for detailed recovery steps.
