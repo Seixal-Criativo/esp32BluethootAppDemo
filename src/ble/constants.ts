@@ -3,6 +3,8 @@ export const DEVICE_NAME = 'ESP32_LED';
 export const SERVICE_UUID = '7B6F0001-6F6D-4A39-8F7D-0EEB5D4D0001';
 // One reusable command characteristic for every controller function.
 export const CONTROL_CHARACTERISTIC_UUID = '7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001';
+export const EVENT_CHARACTERISTIC_UUID = '7B6F0003-6F6D-4A39-8F7D-0EEB5D4D0001';
+export const MAX_FRAME_LENGTH = 160;
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -48,22 +50,4 @@ export const fromBleValue = (value: string | null): string => {
   }
 
   return result;
-};
-
-export const commandFor = (functionId: string, isOn: boolean): string =>
-  `${functionId}:${isOn ? '1' : '0'}`;
-
-export const statesFromBleValue = (value: string | null): Record<string, boolean> => {
-  const states: Record<string, boolean> = {};
-
-  fromBleValue(value)
-    .split(';')
-    .forEach((entry) => {
-      const [functionId, state] = entry.split('=');
-      if (functionId && (state === '0' || state === '1')) {
-        states[functionId] = state === '1';
-      }
-    });
-
-  return states;
 };

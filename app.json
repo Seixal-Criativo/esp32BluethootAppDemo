@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "ESP32 LED Controller",
-    "slug": "esp32-led-controller",
+    "name": "ESP32 Controller",
+    "slug": "esp32-controller",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

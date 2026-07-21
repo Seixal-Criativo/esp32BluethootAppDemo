@@ -1,157 +1,167 @@
-# ESP32 Bluetooth LED Controller
+# ESP32 Bluetooth Function Controller
 
-A simple Android React Native app that turns an external LED connected to an ESP32 on and off over Bluetooth Low Energy (BLE).
+An Expo SDK 57 Android app that invokes typed ESP32 firmware functions and receives live data over Bluetooth Low Energy.
 
-## Features
+## Included functions
 
-- Scans for an ESP32 advertising as `ESP32_LED`.
-- Connects and uses BLE bonding (Just Works pairing).
-- Reads the LED's current state after connecting.
-- Turns an external LED on or off from the app.
-- Uses a custom BLE service, so only the app and matching ESP32 sketch share the protocol.
+- Set the GPIO 12 LED on or off.
+- Blink the LED with configurable on time, off time, and count. Blinking is non-blocking.
+- Subscribe to live GPIO 34 analog readings from 100–5000 ms.
+- Display raw 12-bit ADC, approximate millivolts, and the latest 60 samples.
 
 ## Hardware
 
-You need:
-
-- ESP32 DevKit board
-- Micro-USB/USB-C data cable for the ESP32
-- One LED
-- One 220–330 Ω resistor
-- Breadboard and jumper wires
-- Android phone with Bluetooth enabled
-
-### Wiring
-
-Connect the LED exactly as follows:
+Connect the LED through a 220–330 Ω resistor:
 
 ```text
-ESP32 GPIO 12 ── 220–330 Ω resistor ── LED long leg / anode (+)
-ESP32 GND     ───────────────────────── LED short leg / cathode (-)
+ESP32 GPIO 12 ── resistor ── LED anode (+)
+ESP32 GND     ────────────── LED cathode (-)
 ```
 
-When the app sends **ON**, GPIO 12 is set HIGH and the LED stays lit. When the app sends **OFF**, GPIO 12 is set LOW.
+For the analog demo, connect a potentiometer:
 
-> GPIO 12 is an ESP32 boot-strapping pin. This wiring is safe because the LED/resistor goes to GND; do not add an external pull-up resistor from GPIO 12 to 3.3 V.
-
-## ESP32 firmware
-
-The firmware is located at [firmware/Esp32LedBle/Esp32LedBle.ino](firmware/Esp32LedBle/Esp32LedBle.ino).
-
-### Upload with Arduino IDE
-
-1. Install Arduino IDE.
-2. In **Boards Manager**, install **esp32 by Espressif Systems**.
-3. Open `firmware/Esp32LedBle/Esp32LedBle.ino`.
-4. Select **Tools → Board → ESP32 Arduino → ESP32 Dev Module** (or the board matching your hardware).
-5. Select the ESP32 serial port under **Tools → Port**.
-6. Click **Upload**.
-7. Optionally open Serial Monitor at **115200 baud**. A successful boot prints:
-
-   ```text
-   ESP32_LED is advertising. Pair with the Android app to control the LED.
-   ```
-
-The LED starts OFF after every ESP32 restart.
-
-## Android app
-
-### Prerequisites
-
-- Node.js 22 or later
-- Android Studio with Android SDK Platform 36, Build Tools, Platform Tools, and NDK installed
-- A USB-debuggable Android phone or Android emulator
-
-The local Android SDK path is stored in `android/local.properties`. If Android Studio is installed in its default location, it should contain:
-
-```properties
-sdk.dir=C\:\\Users\\YOUR_WINDOWS_USER\\AppData\\Local\\Android\\Sdk
+```text
+ESP32 3.3 V   ── potentiometer outer leg
+ESP32 GND     ── potentiometer other outer leg
+ESP32 GPIO 34 ── potentiometer center/wiper
 ```
 
-### Install and run
+GPIO 34 is input-only. Never apply more than 3.3 V. ADC millivolt values are approximate and real sensors may require calibration, filtering, scaling, or a sensor-specific Arduino library.
 
-Install JavaScript dependencies once:
+## Firmware
+
+Open `firmware/Esp32LedBle/Esp32LedBle.ino` in Arduino IDE, select the matching ESP32 board and port, then upload. The sketch uses the ESP32 Arduino core BLE library and advertises as `ESP32_LED`.
+
+The app and firmware were upgraded together; the old `FUNCTION:0|1` firmware is not compatible.
+
+### Compile and upload with Arduino CLI
+
+Install the **esp32 by Espressif Systems** board package first. From the project root, list the connected boards and serial ports:
+
+```powershell
+arduino-cli board list
+```
+
+Compile for the generic ESP32 Dev Module:
+
+```powershell
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+```
+
+Upload it, replacing `COM6` with the port shown by `arduino-cli board list`:
+
+```powershell
+arduino-cli upload --port COM6 --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+```
+
+Open the serial monitor at 115200 baud:
+
+```powershell
+arduino-cli monitor --port COM6 --config baudrate=115200
+```
+
+On Windows, if `arduino-cli` is not on `PATH` but Arduino IDE is installed in the default per-user location, use its full path:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe" compile --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+& "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe" upload --port COM6 --fqbn esp32:esp32:esp32 firmware/Esp32LedBle
+```
+
+## Run the Android app
+
+Requirements are Node.js 22.13 or later, Android SDK 36, an Android device, and Bluetooth.
+
+Install the JavaScript dependencies:
 
 ```powershell
 npm install
 ```
 
-Build and install the development app on a connected Android device:
+Check the TypeScript code without producing an app:
+
+```powershell
+npx tsc --noEmit
+```
+
+### Compile and install a development build
+
+Connect an Android phone with USB debugging enabled, then run this from the project root:
 
 ```powershell
 npx expo run:android
 ```
 
-Start the Expo development server for future JavaScript changes:
+This compiles the native React Native Android project, builds the development app, installs it on the connected phone, and starts Expo. BLE uses native code, so Expo Go is not supported.
+
+For later JavaScript/TypeScript-only changes, keep the installed development build and start only the development server:
 
 ```powershell
 npx expo start --dev-client
 ```
 
-> This project uses a native BLE library. It cannot run in Expo Go; use the generated development build instead.
+### Compile a debug APK without installing it
 
-### Use the app
+The generated Android project includes the Gradle wrapper. On Windows PowerShell:
 
-1. Power the ESP32 after uploading the sketch.
-2. Open **ESP32 LED Controller** on the Android phone.
-3. Tap **Scan & Connect**.
-4. Allow the Android **Nearby devices** permission.
-5. Accept the pairing request for `ESP32_LED` if Android shows one.
-6. Use the **GPIO 12 LED** switch in the app to control the external wired LED.
+```powershell
+Set-Location android
+.\gradlew.bat :app:assembleDebug
+Set-Location ..
+```
+
+The APK is produced at:
+
+```text
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install that APK on a USB-connected phone with Android Platform Tools:
+
+```powershell
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+If native dependencies or `app.json` plugins change, run `npx expo run:android` again rather than only restarting the development server.
 
 ## BLE protocol
 
 | Item | Value |
 | --- | --- |
-| Device name | `ESP32_LED` |
-| Service UUID | `7B6F0001-6F6D-4A39-8F7D-0EEB5D4D0001` |
-| LED characteristic UUID | `7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001` |
-| Characteristic operations | Read and write, encrypted |
-| Command format | `FUNCTION_ID:1` to turn on; `FUNCTION_ID:0` to turn off |
-| Current LED commands | `LED:1` and `LED:0` |
+| Device | `ESP32_LED` |
+| Service | `7B6F0001-6F6D-4A39-8F7D-0EEB5D4D0001` |
+| Command characteristic | `7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001` encrypted write |
+| Event characteristic | `7B6F0003-6F6D-4A39-8F7D-0EEB5D4D0001` encrypted read/notify |
 | Pairing | BLE Just Works bonding |
 
-## Add another Bluetooth-controlled output
+Frames use compact ASCII:
 
-The controller is registry-based. To add another simple on/off output, such as a relay, add the same ID in exactly two places:
+```text
+C|requestId|function.name|key=value;key=value
+R|requestId|ok|key=value
+R|requestId|error|code=CODE;message=description
+E|eventName|key=value;key=value
+```
 
-1. In `firmware/Esp32LedBle/Esp32LedBle.ino`, add one row to `OUTPUTS`:
+Registered functions are `system.snapshot`, `led.set`, `led.blink`, `sensor.subscribe`, and `sensor.unsubscribe`. Events are `state` and `analog`. Frames are limited to 160 bytes, and app requests time out after five seconds.
 
-   ```cpp
-   {"RELAY", 13, false, false},
-   ```
+## Add an ESP32 function
 
-2. In `src/ble/functions.ts`, add one row to `CONTROLLER_FUNCTIONS`:
+The phone invokes compiled handlers; it intentionally cannot execute arbitrary Arduino source.
 
-   ```ts
-   { id: 'RELAY', label: 'Relay', description: 'Relay module on GPIO 13' },
-   ```
+1. Write a handler in the `.ino` and register it in `COMMANDS`.
+2. Add its arguments and result to `Esp32CommandMap` in `src/ble/types.ts`.
+3. Parse its result in `BleService.invoke`.
+4. Add purpose-built app controls and validation.
+5. Flash matching firmware before using the updated app.
 
-Compile/upload the ESP32 sketch, then reload the app. The app automatically shows a new switch and sends `RELAY:1` or `RELAY:0` over BLE.
-
-Detailed guides:
-
-- [English](docs/bluetooth-controller-guide.en.md)
-- [Português (Portugal)](docs/bluetooth-controller-guide.pt-PT.md)
+`src/ble/protocol.ts` owns frame serialization/parsing, while `src/ble/BleService.ts` owns request correlation, notification monitoring, timeouts, and disconnect cleanup.
 
 ## Troubleshooting
 
-| Problem | What to check |
-| --- | --- |
-| LED does not light | Check LED polarity, the resistor, GPIO 12 connection, and GND. Reverse the LED if needed. |
-| LED behaves backwards | Set `LED_ACTIVE_LOW` to `true` near the top of the `.ino` file, then upload again. |
-| App cannot find the ESP32 | Confirm the board is powered, nearby, and Serial Monitor says it is advertising. |
-| Connection or pairing fails | In Android Bluetooth settings, forget `ESP32_LED`, restart the ESP32, then scan again. |
-| App says permission is required | Open Android Settings → Apps → ESP32 LED Controller → Permissions and allow **Nearby devices**. |
-| Android build cannot find the SDK | Set `sdk.dir` in `android/local.properties` to the Android SDK location shown in Android Studio. |
-| The LED toggles more than once | Reload the latest development bundle (`r` in the Expo terminal) so the updated switch write guard is used. |
+- If scanning fails, enable Bluetooth and confirm Serial Monitor at 115200 says the ESP32 is advertising.
+- If pairing fails after upgrading, forget `ESP32_LED` in Android Bluetooth settings, restart the ESP32, and reconnect.
+- If telemetry stays flat, check GPIO 34 wiring and common ground.
+- If controls time out, confirm the new firmware and app are both installed.
+- If native dependencies change, rebuild with `npx expo run:android`.
 
-## Project structure
-
-```text
-App.tsx                         App screen and connection state
-src/ble/BleService.ts           BLE scanning, connection, read, and write logic
-src/ble/constants.ts            Device name, UUIDs, and LED commands
-firmware/Esp32LedBle/           ESP32 Arduino sketch
-android/                        Generated native Android development project
-```
+See [troubleshoot.md](troubleshoot.md) for detailed recovery steps.

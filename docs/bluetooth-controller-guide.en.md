@@ -1,157 +1,130 @@
-# Extending the Bluetooth Controller
+# Extending the Bluetooth Function Controller
 
-## Overview
+## Architecture
 
-This project controls ESP32 hardware from an Android React Native app through Bluetooth Low Energy (BLE). There is no Wi-Fi connection, cloud service, or backend.
-
-```text
-React Native app
-  → finds ESP32_LED by BLE scan
-  → connects and completes Bluetooth pairing
-  → writes a readable command, for example LED:1
-  → ESP32 validates the command
-  → ESP32 changes the matching GPIO output
-```
-
-The ESP32 returns a state snapshot after connecting or processing a command, for example:
+The Android app does not execute Arduino code remotely. It invokes functions compiled into the ESP32 firmware. This is safer, validates arguments, and lets long-running behavior coexist with sensor telemetry.
 
 ```text
-LED=1;RELAY=0
+App UI → BleService.invoke() → encrypted command characteristic
+                                  ↓
+                         firmware COMMANDS registry
+                                  ↓
+App state ← response/state/sensor notifications ← event characteristic
 ```
 
-## BLE contract
+`react-native-ble-plx` carries characteristic values as Base64. `src/ble/constants.ts` performs that transport conversion; protocol code and firmware work with readable ASCII frames.
+
+## BLE interface
 
 | Item | Value |
 | --- | --- |
 | Device name | `ESP32_LED` |
 | Service UUID | `7B6F0001-6F6D-4A39-8F7D-0EEB5D4D0001` |
-| Control characteristic UUID | `7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001` |
-| Security | Encrypted BLE characteristic with Just Works bonding |
-| Turn a function ON | `FUNCTION_ID:1` |
-| Turn a function OFF | `FUNCTION_ID:0` |
-| Request all states | `GET` |
-| State response | `FUNCTION_ID=0;OTHER_ID=1` |
+| Command UUID | `7B6F0002-6F6D-4A39-8F7D-0EEB5D4D0001` |
+| Event UUID | `7B6F0003-6F6D-4A39-8F7D-0EEB5D4D0001` |
+| Security | Encrypted BLE bonding (Just Works) |
+| Maximum frame | 160 ASCII bytes |
 
-The app converts commands to Base64 before sending them because `react-native-ble-plx` expects characteristic values in Base64. You only work with normal text such as `LED:1`; the conversion is handled in `src/ble/constants.ts`.
-
-## Main project files
-
-| File | Purpose |
-| --- | --- |
-| `firmware/Esp32LedBle/Esp32LedBle.ino` | ESP32 BLE server, command validation, and GPIO outputs |
-| `src/ble/functions.ts` | App function registry; controls are generated from this list |
-| `src/ble/BleService.ts` | BLE scan, connection, state reads, and command writes |
-| `src/ble/constants.ts` | BLE name, UUIDs, Base64 conversion, and protocol helpers |
-| `App.tsx` | Connection screen and automatically rendered switches |
-
-## Add a new ON/OFF function
-
-Adding a switchable GPIO output requires one matching entry in the ESP32 registry and the app registry.
-
-### Step 1 — Add the ESP32 output
-
-Open `firmware/Esp32LedBle/Esp32LedBle.ino` and find `OUTPUTS`:
-
-```cpp
-OutputFunction OUTPUTS[] = {
-  {"LED", 12, false, false},
-  // {"RELAY", 13, false, false},
-};
-```
-
-Add a row for the new output. For a relay on GPIO 13:
-
-```cpp
-{"RELAY", 13, false, false},
-```
-
-Each value means:
+Commands are written with a response at the BLE transport level. Function results arrive asynchronously through the event notification characteristic:
 
 ```text
-{ "FUNCTION_ID", GPIO_PIN, ACTIVE_LOW, INITIAL_STATE }
+C|requestId|function.name|key=value;key=value
+R|requestId|ok|key=value;key=value
+R|requestId|error|code=CODE;message=description
+E|event.name|key=value;key=value
 ```
 
-- `FUNCTION_ID`: uppercase identifier used by BLE and the app, for example `RELAY`.
-- `GPIO_PIN`: ESP32 output pin, for example `13`.
-- `ACTIVE_LOW`: use `false` for normal HIGH = ON wiring; use `true` only for inverted hardware.
-- `INITIAL_STATE`: normally `false`, so the device starts safely OFF.
+The request ID lets the app match concurrent responses. Values may not contain `|`, `;`, or `=`. App requests time out after five seconds.
 
-### Step 2 — Add the matching app function
+## Built-in functions
 
-Open `src/ble/functions.ts` and add the same ID:
-
-```ts
-export const CONTROLLER_FUNCTIONS = [
-  {
-    id: 'LED',
-    label: 'GPIO 12 LED',
-    description: 'External LED connected to GPIO 12',
-  },
-  {
-    id: 'RELAY',
-    label: 'Relay',
-    description: 'Relay module connected to GPIO 13',
-  },
-] as const;
-```
-
-The app automatically creates the Relay switch. You do not need to add a new UUID, create another BLE service, or edit `App.tsx` for a regular ON/OFF output.
-
-### Step 3 — Compile, upload, and reload
-
-1. Compile and upload the `.ino` sketch to the ESP32.
-2. Reload the Expo development app.
-3. Connect to `ESP32_LED`.
-4. The new switch appears automatically.
-5. Toggle it and verify the connected hardware responds.
-
-## Example: add a buzzer
-
-For an active buzzer on GPIO 14:
-
-```cpp
-// firmware/Esp32LedBle/Esp32LedBle.ino
-{"BUZZER", 14, false, false},
-```
-
-```ts
-// src/ble/functions.ts
-{ id: 'BUZZER', label: 'Buzzer', description: 'Active buzzer on GPIO 14' },
-```
-
-The app sends `BUZZER:1` to turn it on and `BUZZER:0` to turn it off.
-
-> For motors, solenoids, relay coils, LED strips, and other high-current equipment, use a suitable transistor, MOSFET, relay module, flyback diode, and separate power supply as required. Do not power a load directly from an ESP32 GPIO.
-
-## Add richer functions
-
-The registry is designed for simple binary outputs. Use the same control characteristic but add a dedicated command handler for more complex features:
-
-| Feature | Example command | App control |
+| Function | Arguments | Result |
 | --- | --- | --- |
-| PWM brightness | `BRIGHTNESS:128` | Slider |
-| Servo angle | `SERVO:90` | Slider or preset buttons |
-| Timed buzzer | `BEEP:500` | Button |
-| Sensor state | `TEMPERATURE=23.4` | Text value or chart |
+| `system.snapshot` | none | LED, blink, and stream state |
+| `led.set` | `on=0|1` | LED and blink state |
+| `led.blink` | `onMs=50..10000`, `offMs=50..10000`, `count=1..100` | LED and blink state |
+| `sensor.subscribe` | `intervalMs=100..5000` | stream state and interval |
+| `sensor.unsubscribe` | none | stream state and interval |
 
-For these, validate the number and permitted range in the ESP32 sketch before operating hardware. Add the corresponding UI control in `App.tsx` and a typed write helper in `BleService.ts` if the function is not a simple ON/OFF switch.
+`led.set` cancels an active blink. Blinking uses a `millis()` state machine rather than blocking delays, so analog events continue while it runs. The firmware stops streaming automatically when the phone disconnects.
 
-## Safety and maintenance rules
+Events are:
 
-- Function IDs must match exactly in `OUTPUTS` and `CONTROLLER_FUNCTIONS`.
-- Use uppercase IDs containing letters, numbers, and underscores only.
-- Start new physical outputs in the OFF state unless there is a clear reason not to.
-- Validate all BLE input on the ESP32 before changing GPIO state.
-- Do not reuse an ESP32 boot-strapping pin without checking its boot behaviour.
-- JavaScript-only app changes require an Expo reload; native dependency/configuration changes require a new Android development build.
-- Every `.ino` change requires compilation and an ESP32 firmware upload.
+- `E|state|on=0;blinking=0`
+- `E|analog|seq=1;raw=2048;mv=1650;uptimeMs=12345`
 
-## Troubleshooting
+## Add a callable firmware function
 
-| Issue | Solution |
-| --- | --- |
-| New switch is missing | Confirm the item was added to `CONTROLLER_FUNCTIONS` and reload the app. |
-| Switch appears but does nothing | Confirm the exact same ID exists in `OUTPUTS`, then compile and upload the ESP32 sketch. |
-| ESP32 rejects a command | Check the Serial Monitor at 115200 baud; the firmware logs invalid or unknown commands. |
-| App cannot reconnect | Forget `ESP32_LED` in Android Bluetooth settings, restart the ESP32, then scan again. |
-| Firmware cannot upload | Close Serial Monitor or any application using the ESP32 COM port, then upload again. |
+1. Add a handler to `firmware/Esp32LedBle/Esp32LedBle.ino` with this signature:
+
+   ```cpp
+   void relayPulse(uint32_t id, const String& arguments) {
+     uint32_t durationMs;
+     if (!unsignedArgument(arguments, "durationMs", 50, 5000, durationMs)) {
+       errorResponse(id, "INVALID_ARGUMENT", "durationMs must be 50 to 5000");
+       return;
+     }
+
+     // Start non-blocking hardware behavior here.
+     response(id, "active=1");
+   }
+   ```
+
+2. Register it in `COMMANDS`:
+
+   ```cpp
+   {"relay.pulse", relayPulse},
+   ```
+
+3. Add the command to `Esp32CommandMap` in `src/ble/types.ts`:
+
+   ```ts
+   'relay.pulse': {
+     args: { durationMs: number };
+     result: { active: boolean };
+   };
+   ```
+
+4. Parse its result in `BleService.invoke`, then build a validated UI control that calls:
+
+   ```ts
+   await ble.invoke(device.id, 'relay.pulse', { durationMs: 500 });
+   ```
+
+5. Compile and flash the firmware, rebuild/reload the app, and test valid, invalid, disconnect, and timeout cases.
+
+Keep handlers short. Any timed motor, relay, animation, or sampling work should store state and advance from `loop()` with wrap-safe `millis()` comparisons.
+
+## Add another live sensor
+
+For a new sensor event:
+
+1. Initialize the sensor in firmware `setup()`.
+2. Add subscribe/unsubscribe functions or extend the existing sensor subscription deliberately.
+3. Read on schedule from `loop()` and publish a compact named event.
+4. Add the event shape to `DeviceEvent` in `src/ble/types.ts`.
+5. Parse and validate it in `src/ble/protocol.ts`.
+6. Route it from `BleService.subscribe` to a UI callback.
+7. Limit retained samples so the app does not grow memory indefinitely.
+
+BLE is appropriate for compact live measurements, not high-bandwidth audio or video. Increase the interval or pack a binary protocol if measurements become too large or frequent.
+
+## GPIO 34 analog demo
+
+```text
+ESP32 3.3 V   ── potentiometer outer leg
+ESP32 GND     ── potentiometer other outer leg
+ESP32 GPIO 34 ── potentiometer center/wiper
+```
+
+GPIO 34 is input-only. The signal must remain between 0 V and 3.3 V. `analogReadMilliVolts()` is convenient but should not be treated as laboratory calibration.
+
+## Verification
+
+```powershell
+npx tsc --noEmit
+npx expo install --check
+npx expo run:android
+```
+
+Upload the matching sketch with Arduino IDE. If bonding behaves incorrectly after a protocol or firmware upgrade, forget `ESP32_LED` in Android Bluetooth settings, restart the ESP32, and pair again.
