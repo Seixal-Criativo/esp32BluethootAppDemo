@@ -71,18 +71,57 @@ On Windows, if `arduino-cli` is not on `PATH` but Arduino IDE is installed in th
 
 Requirements are Node.js 22.13 or later, Android SDK 36, an Android device, and Bluetooth.
 
+Install the JavaScript dependencies:
+
 ```powershell
 npm install
+```
+
+Check the TypeScript code without producing an app:
+
+```powershell
+npx tsc --noEmit
+```
+
+### Compile and install a development build
+
+Connect an Android phone with USB debugging enabled, then run this from the project root:
+
+```powershell
 npx expo run:android
 ```
 
-For later JavaScript-only changes:
+This compiles the native React Native Android project, builds the development app, installs it on the connected phone, and starts Expo. BLE uses native code, so Expo Go is not supported.
+
+For later JavaScript/TypeScript-only changes, keep the installed development build and start only the development server:
 
 ```powershell
 npx expo start --dev-client
 ```
 
-BLE uses native code, so Expo Go is not supported.
+### Compile a debug APK without installing it
+
+The generated Android project includes the Gradle wrapper. On Windows PowerShell:
+
+```powershell
+Set-Location android
+.\gradlew.bat :app:assembleDebug
+Set-Location ..
+```
+
+The APK is produced at:
+
+```text
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install that APK on a USB-connected phone with Android Platform Tools:
+
+```powershell
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+If native dependencies or `app.json` plugins change, run `npx expo run:android` again rather than only restarting the development server.
 
 ## BLE protocol
 
